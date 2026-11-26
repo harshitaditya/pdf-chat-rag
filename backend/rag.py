@@ -13,19 +13,41 @@ from backend.vector_store import DocumentRecord, SearchResult, VectorStore
 
 
 ProviderName = Literal["ollama", "gemini"]
+StyleName = Literal["simple", "detailed", "hinglish", "notes"]
 
-# Character budgets to keep Full-PDF reading safe for both local CPU and cloud 1M context.
 OFFLINE_DIRECT_CHAR_LIMIT = 24_000
 OFFLINE_SECTION_CHAR_LIMIT = 18_000
 ONLINE_DIRECT_CHAR_LIMIT = 2_400_000
 
-SYSTEM_PROMPT = (
-    "You are a precise document assistant. "
-    "Answer the user's question using ONLY the provided document contents. "
-    "Always cite sources inline using the format [filename | Page X]. "
-    "If the provided documents do not contain enough information to answer, "
-    "say clearly what is missing instead of guessing."
+BASE_SYSTEM_PROMPT = (
+    "You are a helpful, clear teacher and document assistant. "
+    "Base your answers strictly on the provided document contents—do not invent facts "
+    "that aren't in the documents. "
+    "Cite sources naturally at the end of a paragraph or bullet using [filename | Page X] "
+    "(or [filename | Page X, Y]) instead of interrupting every phrase. "
+    "If something asked is not in the documents, say so politely and briefly."
 )
+
+STYLE_INSTRUCTIONS: Dict[str, str] = {
+    "simple": (
+        "Explain in plain, easy-to-understand language like a friendly teacher. "
+        "Use short paragraphs, everyday analogies or simple examples when helpful, "
+        "and clear headings or bullet points so it's effortless to read."
+    ),
+    "detailed": (
+        "Give a thorough, step-by-step explanation covering every important concept, "
+        "architecture flow, and detail from the documents. Organize with clear headings."
+    ),
+    "hinglish": (
+        "Explain in natural, easy Hinglish (Roman Hindi + English technical terms), "
+        "just like a friend or teacher explaining clearly. Keep technical terms in English "
+        "and use simple relatable examples."
+    ),
+    "notes": (
+        "Format the answer as clean, exam-ready study notes with bold headings, "
+        "crisp bullet points, key definitions, and main takeaways."
+    ),
+}
 
 MAP_SYSTEM_PROMPT = (
     "You are reading one section of a larger document to help answer a user's question. "
@@ -33,6 +55,18 @@ MAP_SYSTEM_PROMPT = (
     "with citations in [filename | Page X] format. If nothing in this section is relevant, "
     "reply briefly with: NO_RELEVANT_INFO."
 )
+
+
+def build_system_prompt(
+    style: StyleName = "simple",
+    custom_instruction: Optional[str] = None,
+) -> str:
+    """Combine base grounding rules with the user's chosen explanation style."""
+    style_text = STYLE_INSTRUCTIONS.get(style, STYLE_INSTRUCTIONS["simple"])
+    parts = [BASE_SYSTEM_PROMPT, f"Explanation style: {style_text}"]
+    if custom_instruction and custom_instruction.strip():
+        parts.append(f"Additional user preference: {custom_instruction.strip()}")
+    return "\n\n".join(parts)
 
 
 @dataclass(frozen=True)
@@ -64,11 +98,12 @@ def build_context_block(sources: Sequence[SearchResult]) -> str:
 def build_messages(
     question: str,
     context_text: str,
+    system_prompt: str = BASE_SYSTEM_PROMPT,
     history: Optional[List[Dict[str, str]]] = None,
     context_label: str = "Full document contents",
 ) -> List[Dict[str, str]]:
     """Build chat messages for Ollama combining system instructions, history, and context."""
-    messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
     if history:
         for msg in history[-6:]:
@@ -80,7 +115,7 @@ def build_messages(
     user_prompt = (
         f"{context_label}:\n\n{context_text}\n\n"
         f"Question: {question}\n\n"
-        "Answer clearly and cite [filename | Page X] for every claim."
+        "Answer in the requested explanation style and include [filename | Page X] citations naturally."
     )
     messages.append({"role": "user", "content": user_prompt})
     return messages
@@ -105,7 +140,7 @@ def build_gemini_input(
     sections.append(f"Full document contents:\n\n{context_text}")
     sections.append(
         f"Question: {question}\n\n"
-        "Answer clearly and cite [filename | Page X] for every claim."
+        "Answer in the requested explanation style and include [filename | Page X] citations naturally."
     )
     return "\n\n".join(sections)
 
@@ -147,7 +182,7 @@ def _serialize_source(s: SearchResult) -> Dict[str, Any]:
 
 
 class RAGService:
-    """Coordinates document ingestion and Full-PDF Offline/Online Q&A."""
+    """Coordinates instant document ingestion and Full-PDF Offline/Online Q&A."""
 
     def __init__(
         self,
@@ -166,30 +201,12 @@ class RAGService:
         self.offline_section_char_limit = offline_section_char_limit
         self.settings.upload_dir.mkdir(parents=True, exist_ok=True)
 
-    def _default_embed_model(self, provider: ProviderName) -> str:
-        return (
-            self.settings.gemini_embed_model
-            if provider == "gemini"
-            else self.settings.embed_model
-        )
-
     def _default_chat_model(self, provider: ProviderName) -> str:
         return (
             self.settings.gemini_chat_model
             if provider == "gemini"
             else self.settings.chat_model
         )
-
-    async def _embed_texts(
-        self,
-        texts: List[str],
-        provider: ProviderName,
-        model: str,
-        api_key: Optional[str] = None,
-    ) -> List[List[float]]:
-        if provider == "gemini":
-            return await self.gemini.embed(texts=texts, model=model, api_key=api_key)
-        return await self.ollama.embed(texts=texts, model=model)
 
     async def ingest_file(
         self,
@@ -199,16 +216,12 @@ class RAGService:
         embed_model: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> IngestResult:
-        """Parse, chunk, embed via chosen provider, and store if not already indexed."""
+        """Parse, chunk, and store document pages immediately without requiring embedding APIs."""
         safe_name = Path(filename).name
         file_hash = hashlib.sha256(content).hexdigest()
-        chosen_embed = embed_model or self._default_embed_model(provider)
+        chosen_embed = embed_model or "full-pdf"
 
-        existing = self.store.get_by_hash(
-            file_hash,
-            embed_provider=provider,
-            embed_model=chosen_embed,
-        )
+        existing = self.store.get_by_hash(file_hash)
         if existing is not None:
             return IngestResult(document=existing, already_indexed=True)
 
@@ -219,19 +232,16 @@ class RAGService:
             chunk_overlap=self.settings.chunk_overlap,
         )
 
-        embeddings = await self._embed_texts(
-            texts=[c.text for c in chunks],
-            provider=provider,
-            model=chosen_embed,
-            api_key=api_key,
-        )
+        # Full-PDF Mode reads chunks sequentially in reading order, so zero-vectors suffice
+        # and uploads succeed instantly offline or online without extra API quota.
+        placeholder_embeddings = [[0.0] for _ in chunks]
 
         record = self.store.add_document(
             filename=safe_name,
             file_hash=file_hash,
             page_count=len(pages),
             chunks=chunks,
-            embeddings=embeddings,
+            embeddings=placeholder_embeddings,
             embed_provider=provider,
             embed_model=chosen_embed,
         )
@@ -287,6 +297,8 @@ class RAGService:
         question: str,
         provider: ProviderName = "ollama",
         model: Optional[str] = None,
+        style: StyleName = "simple",
+        custom_instruction: Optional[str] = None,
         doc_ids: Optional[Sequence[str]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         api_key: Optional[str] = None,
@@ -296,12 +308,13 @@ class RAGService:
         sources = self.load_full_documents(doc_ids=doc_ids)
         if not sources:
             return ChatResponse(
-                answer="No indexed documents found matching your selection. Please upload a PDF or note first.",
+                answer="No uploaded files found matching your selection. Please upload a PDF or note first.",
                 provider=provider,
                 model=chosen_model,
                 sources=[],
             )
 
+        sys_prompt = build_system_prompt(style=style, custom_instruction=custom_instruction)
         full_text = build_context_block(sources)
 
         if provider == "gemini":
@@ -312,7 +325,7 @@ class RAGService:
                 history=history,
             )
             answer = await self.gemini.chat(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=sys_prompt,
                 user_prompt=user_input,
                 model=chosen_model,
                 api_key=api_key,
@@ -322,6 +335,7 @@ class RAGService:
                 messages = build_messages(
                     question=question,
                     context_text=full_text,
+                    system_prompt=sys_prompt,
                     history=history,
                 )
             else:
@@ -333,6 +347,7 @@ class RAGService:
                 messages = build_messages(
                     question=question,
                     context_text=synthesized,
+                    system_prompt=sys_prompt,
                     history=history,
                     context_label="Notes extracted across all PDF sections",
                 )
@@ -350,6 +365,8 @@ class RAGService:
         question: str,
         provider: ProviderName = "ollama",
         model: Optional[str] = None,
+        style: StyleName = "simple",
+        custom_instruction: Optional[str] = None,
         doc_ids: Optional[Sequence[str]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         api_key: Optional[str] = None,
@@ -368,11 +385,12 @@ class RAGService:
         if not sources:
             yield {
                 "type": "token",
-                "content": "No indexed documents found matching your selection. Please upload a PDF or note first.",
+                "content": "No uploaded files found matching your selection. Please upload a PDF or note first.",
             }
             yield {"type": "done"}
             return
 
+        sys_prompt = build_system_prompt(style=style, custom_instruction=custom_instruction)
         full_text = build_context_block(sources)
 
         if provider == "gemini":
@@ -383,7 +401,7 @@ class RAGService:
                 history=history,
             )
             async for token in self.gemini.chat_stream(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=sys_prompt,
                 user_prompt=user_input,
                 model=chosen_model,
                 api_key=api_key,
@@ -394,6 +412,7 @@ class RAGService:
                 messages = build_messages(
                     question=question,
                     context_text=full_text,
+                    system_prompt=sys_prompt,
                     history=history,
                 )
             else:
@@ -405,6 +424,7 @@ class RAGService:
                 messages = build_messages(
                     question=question,
                     context_text=synthesized,
+                    system_prompt=sys_prompt,
                     history=history,
                     context_label="Notes extracted across all PDF sections",
                 )

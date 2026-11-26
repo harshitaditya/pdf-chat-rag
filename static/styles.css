@@ -275,6 +275,22 @@ body {
   background: var(--surface-soft);
 }
 
+.style-select {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.style-select:focus {
+  border-color: var(--primary);
+}
+
 .dot {
   width: 8px;
   height: 8px;
@@ -429,6 +445,46 @@ body {
 .bubble pre code {
   background: none;
   padding: 0;
+}
+
+.bubble h2,
+.bubble h3,
+.bubble h4 {
+  margin: 10px 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.bubble h2:first-child,
+.bubble h3:first-child {
+  margin-top: 0;
+}
+
+.bubble ul,
+.bubble ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.bubble li {
+  margin: 4px 0;
+}
+
+.retry-btn {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .cite-pill {
@@ -622,18 +678,22 @@ body {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   padding: 9px 11px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
+  font-family: var(--font);
   font-size: 14px;
   outline: none;
+  resize: vertical;
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   border-color: var(--primary);
 }
 

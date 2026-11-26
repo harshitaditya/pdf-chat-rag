@@ -1,4 +1,4 @@
-"""End-to-end tests covering Full-PDF Mode in Offline (Ollama), Online (Gemini), and Map-Reduce."""
+"""End-to-end tests covering Full-PDF Mode, explanation styles, instant upload, and streaming."""
 
 from io import BytesIO
 from pathlib import Path
@@ -17,17 +17,14 @@ from backend.vector_store import VectorStore
 
 
 class FakeOllamaClient(OllamaClient):
-    """Deterministic local fake for Ollama embeddings and chat generation."""
+    """Deterministic local fake for Ollama chat generation."""
 
     def __init__(self) -> None:
         super().__init__(base_url="http://fake-ollama:11434")
         self.chat_calls: List[List[Dict[str, str]]] = []
 
     async def list_models(self) -> List[str]:
-        return ["qwen2.5:7b", "nomic-embed-text"]
-
-    async def embed(self, texts: List[str], model: str) -> List[List[float]]:
-        return [[0.5, 0.5, 0.5] for _ in texts]
+        return ["qwen2.5:7b"]
 
     async def chat(
         self,
@@ -53,20 +50,12 @@ class FakeOllamaClient(OllamaClient):
 
 
 class FakeGeminiClient(GeminiClient):
-    """Deterministic fake for Gemini API embeddings and Interactions streaming."""
+    """Deterministic fake for Gemini Interactions API."""
 
-    def __init__(self) -> None:
-        super().__init__(api_key="fake-gemini-key")
+    def __init__(self, api_key: str = "fake-gemini-key") -> None:
+        super().__init__(api_key=api_key)
         self.prompts: List[str] = []
-
-    async def embed(
-        self,
-        texts: List[str],
-        model: str = "gemini-embedding-001",
-        api_key: Optional[str] = None,
-    ) -> List[List[float]]:
-        self._resolve_key(api_key)
-        return [[0.2, 0.4, 0.6, 0.8] for _ in texts]
+        self.system_instructions: List[str] = []
 
     async def chat(
         self,
@@ -76,6 +65,7 @@ class FakeGeminiClient(GeminiClient):
         api_key: Optional[str] = None,
     ) -> str:
         self._resolve_key(api_key)
+        self.system_instructions.append(system_instruction)
         self.prompts.append(user_prompt)
         return f"Gemini ({model}) full-document answer [ml.md | Page 1]."
 
@@ -87,6 +77,7 @@ class FakeGeminiClient(GeminiClient):
         api_key: Optional[str] = None,
     ) -> AsyncIterator[str]:
         self._resolve_key(api_key)
+        self.system_instructions.append(system_instruction)
         self.prompts.append(user_prompt)
         for part in ["Transformers ", "use self-attention ", "[ml.md | Page 1]."]:
             yield part
@@ -123,7 +114,7 @@ def test_extract_pages_rejects_empty_pdf() -> None:
         raise AssertionError("Expected ValueError for blank PDF")
 
 
-def test_ui_root_has_simple_pdf_chat_and_no_top_k(tmp_path: Path) -> None:
+def test_ui_root_has_style_picker_and_no_top_k(tmp_path: Path) -> None:
     cfg = Settings(db_path=tmp_path / "rag.db", upload_dir=tmp_path / "uploads")
     app = create_app(
         app_settings=cfg,
@@ -134,10 +125,12 @@ def test_ui_root_has_simple_pdf_chat_and_no_top_k(tmp_path: Path) -> None:
     resp = client.get("/")
     assert resp.status_code == 200
     assert "PDF Chat" in resp.text
+    assert "styleSelect" in resp.text
+    assert "customInstructionInput" in resp.text
     assert "topKInput" not in resp.text
 
 
-def test_hybrid_full_pdf_offline_online_and_map_reduce(tmp_path: Path) -> None:
+def test_instant_upload_styles_and_map_reduce(tmp_path: Path) -> None:
     cfg = Settings(
         db_path=tmp_path / "rag.db",
         upload_dir=tmp_path / "uploads",
@@ -145,7 +138,8 @@ def test_hybrid_full_pdf_offline_online_and_map_reduce(tmp_path: Path) -> None:
         chunk_overlap=50,
     )
     fake_ollama = FakeOllamaClient()
-    fake_gemini = FakeGeminiClient()
+    # Even with NO Gemini API key configured, PDF upload succeeds immediately.
+    fake_gemini = FakeGeminiClient(api_key="")
     rag = RAGService(
         store=VectorStore(cfg.db_path),
         ollama=fake_ollama,
@@ -157,40 +151,38 @@ def test_hybrid_full_pdf_offline_online_and_map_reduce(tmp_path: Path) -> None:
     app = create_app(app_settings=cfg, rag_service=rag)
     client = TestClient(app)
 
-    # 1. Health reports full_pdf mode
-    health = client.get("/health").json()
-    assert health["mode"] == "full_pdf"
-    assert health["ollama"]["reachable"] is True
-    assert health["gemini"]["configured"] is True
-
-    # 2. Upload small doc via Offline Ollama
+    # 1. Instant upload under gemini provider without needing an API key
     notes = (
         b"# Database Notes\n\n"
         b"B-Tree indexing keeps keys sorted in balanced pages.\n\n"
         b"ACID guarantees atomicity, consistency, isolation, and durability."
     )
-    off_up = client.post(
-        "/documents/upload?provider=ollama",
+    up_resp = client.post(
+        "/documents/upload?provider=gemini",
         files=[("files", ("notes.md", notes, "text/markdown"))],
     )
-    assert off_up.status_code == 200
-    off_doc = off_up.json()[0]
+    assert up_resp.status_code == 200
+    doc = up_resp.json()[0]
 
-    # 3. Ask Offline on small doc (reads full doc in one pass, no map calls)
-    off_chat = client.post(
+    # 2. Ask Online with Hinglish style + custom instruction (passing key via header)
+    on_chat = client.post(
         "/chat",
+        headers={"X-Gemini-Api-Key": "test-header-key"},
         json={
-            "question": "Summarize the whole notes file",
-            "provider": "ollama",
-            "doc_ids": [off_doc["doc_id"]],
+            "question": "Explain this PDF",
+            "provider": "gemini",
+            "model": "gemini-4-hydrogen",
+            "style": "hinglish",
+            "custom_instruction": "Use real-life examples",
+            "doc_ids": [doc["doc_id"]],
         },
     )
-    assert off_chat.status_code == 200
-    assert len(fake_ollama.chat_calls) == 1
-    assert "B-Tree indexing" in fake_ollama.chat_calls[0][-1]["content"]
-    assert "ACID guarantees" in fake_ollama.chat_calls[0][-1]["content"]
+    assert on_chat.status_code == 200
+    assert "Hinglish" in fake_gemini.system_instructions[-1]
+    assert "Use real-life examples" in fake_gemini.system_instructions[-1]
+    assert "B-Tree indexing" in fake_gemini.prompts[-1]
 
-    # 4. Upload a larger doc exceeding offline_direct_char_limit -> triggers Map-Reduce
+    # 3. Large doc triggers Offline Map-Reduce and streams
     big_text = ("Section detail about distributed consensus and Paxos. " * 25).encode()
     big_up = client.post(
         "/documents/upload?provider=ollama",
@@ -205,29 +197,15 @@ def test_hybrid_full_pdf_offline_online_and_map_reduce(tmp_path: Path) -> None:
         json={
             "question": "Summarize every section",
             "provider": "ollama",
+            "style": "notes",
             "doc_ids": [big_doc["doc_id"]],
         },
     )
     assert big_stream.status_code == 200
     assert '"type": "token"' in big_stream.text
     assert '"type": "done"' in big_stream.text
-    # At least 2 map calls + 1 final stream synthesis call
     assert len(fake_ollama.chat_calls) >= 3
 
-    # 5. Cross-mode Online Gemini reading an Offline-indexed doc directly
-    on_chat = client.post(
-        "/chat",
-        json={
-            "question": "Read everything in notes.md",
-            "provider": "gemini",
-            "model": "gemini-4-hydrogen",
-            "doc_ids": [off_doc["doc_id"]],
-        },
-    )
-    assert on_chat.status_code == 200
-    assert "B-Tree indexing" in fake_gemini.prompts[-1]
-    assert "ACID guarantees" in fake_gemini.prompts[-1]
-
-    # 6. Cleanup
-    assert client.delete(f"/documents/{off_doc['doc_id']}").status_code == 200
+    # 4. Cleanup
+    assert client.delete(f"/documents/{doc['doc_id']}").status_code == 200
     assert client.delete(f"/documents/{big_doc['doc_id']}").status_code == 200

@@ -1,5 +1,10 @@
+const savedProvider = localStorage.getItem("rag_provider");
+
 const state = {
-  provider: localStorage.getItem("rag_provider") || "ollama",
+  provider: savedProvider || "ollama",
+  hasSavedProvider: Boolean(savedProvider),
+  style: localStorage.getItem("rag_style") || "simple",
+  customInstruction: localStorage.getItem("rag_custom_instruction") || "",
   apiKey: localStorage.getItem("rag_gemini_key") || "",
   model: "",
   documents: [],
@@ -21,6 +26,7 @@ const els = {
   docList: document.getElementById("docList"),
   noFilesMsg: document.getElementById("noFilesMsg"),
   pillBtns: document.querySelectorAll(".pill-btn"),
+  styleSelect: document.getElementById("styleSelect"),
   settingsBtn: document.getElementById("settingsBtn"),
   statusDot: document.getElementById("statusDot"),
   statusLabel: document.getElementById("statusLabel"),
@@ -38,6 +44,7 @@ const els = {
   apiKeyInput: document.getElementById("apiKeyInput"),
   apiKeyHint: document.getElementById("apiKeyHint"),
   modelSelect: document.getElementById("modelSelect"),
+  customInstructionInput: document.getElementById("customInstructionInput"),
 };
 
 function authHeaders() {
@@ -56,6 +63,17 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function formatInline(text) {
+  return text
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(
+      /\[([^\]|]+ \| Page [0-9, ]+)\]/g,
+      '<span class="cite-pill">[$1]</span>'
+    );
+}
+
 function renderMarkdown(rawText) {
   let html = escapeHtml(rawText || "");
   const codeBlocks = [];
@@ -66,32 +84,65 @@ function renderMarkdown(rawText) {
     return `@@CODEBLOCK_${idx}@@`;
   });
 
-  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(
-    /\[([^\]|]+ \| Page \d+)\]/g,
-    '<span class="cite-pill">[$1]</span>'
-  );
+  const lines = html.split("\n");
+  const out = [];
+  let listType = null;
 
-  const blocks = html.split(/\n{2,}/).map((block) => {
-    const trimmed = block.trim();
-    if (!trimmed) return "";
-    if (trimmed.startsWith("@@CODEBLOCK_")) return trimmed;
-    const lines = trimmed.split("\n");
-    if (lines.every((l) => /^[-*]\s+/.test(l.trim()))) {
-      const items = lines
-        .map((l) => `<li>${l.trim().replace(/^[-*]\s+/, "")}</li>`)
-        .join("");
-      return `<ul>${items}</ul>`;
+  const closeList = () => {
+    if (listType) {
+      out.push(`</${listType}>`);
+      listType = null;
     }
-    return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
-  });
+  };
 
-  html = blocks.join("");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+    if (trimmed.startsWith("@@CODEBLOCK_")) {
+      closeList();
+      out.push(trimmed);
+      continue;
+    }
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      closeList();
+      const level = Math.min(4, headingMatch[1].length + 1);
+      out.push(`<h${level}>${formatInline(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+    const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
+    if (ulMatch) {
+      if (listType !== "ul") {
+        closeList();
+        listType = "ul";
+        out.push("<ul>");
+      }
+      out.push(`<li>${formatInline(ulMatch[1])}</li>`);
+      continue;
+    }
+    const olMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+    if (olMatch) {
+      if (listType !== "ol") {
+        closeList();
+        listType = "ol";
+        out.push("<ol>");
+      }
+      out.push(`<li>${formatInline(olMatch[1])}</li>`);
+      continue;
+    }
+    closeList();
+    out.push(`<p>${formatInline(trimmed)}</p>`);
+  }
+  closeList();
+
+  let rendered = out.join("");
   codeBlocks.forEach((block, idx) => {
-    html = html.replace(`@@CODEBLOCK_${idx}@@`, block);
+    rendered = rendered.replace(`@@CODEBLOCK_${idx}@@`, block);
   });
-  return html || "<p></p>";
+  return rendered || "<p></p>";
 }
 
 function populateModelSelect(models, preferred) {
@@ -162,6 +213,10 @@ async function refreshHealth() {
   try {
     const resp = await fetch("/health", { headers: authHeaders() });
     state.health = await resp.json();
+    // On cloud deployments where Ollama isn't running, default first-time visitors to Online.
+    if (!state.hasSavedProvider && !state.health.ollama.reachable) {
+      state.provider = "gemini";
+    }
     renderProviderUI();
   } catch (err) {
     els.statusDot.className = "dot err";
@@ -245,13 +300,6 @@ async function deleteDocument(docId) {
 async function uploadFiles(fileList) {
   if (!fileList || fileList.length === 0) return;
 
-  if (state.provider === "gemini" && state.health && !state.health.gemini.configured) {
-    els.settingsModal.hidden = false;
-    els.uploadStatus.className = "upload-feedback error";
-    els.uploadStatus.textContent = "Add your Gemini API key first.";
-    return;
-  }
-
   els.uploadStatus.className = "upload-feedback";
   els.uploadStatus.textContent = `Adding ${fileList.length} file(s)...`;
 
@@ -272,7 +320,7 @@ async function uploadFiles(fileList) {
     data.forEach((d) => state.selectedDocIds.add(d.doc_id));
     await refreshDocuments();
     els.uploadStatus.className = "upload-feedback ok";
-    els.uploadStatus.textContent = "Ready to ask questions!";
+    els.uploadStatus.textContent = "Ready! Ask anything.";
     setTimeout(() => {
       els.uploadStatus.textContent = "";
     }, 3000);
@@ -303,7 +351,6 @@ function appendMessage(role, initialText = "") {
 function attachSources(row, sources) {
   if (!sources || sources.length === 0) return;
 
-  // Group by unique (filename, page_number) for clean display.
   const seen = new Set();
   const uniquePages = [];
   for (const s of sources) {
@@ -339,17 +386,27 @@ function attachSources(row, sources) {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
-async function sendQuestion(questionText) {
+async function sendQuestion(questionText, reuseRows = null) {
   const question = questionText.trim();
   if (!question || state.busy) return;
 
   state.busy = true;
   els.sendBtn.disabled = true;
-  els.questionInput.value = "";
-  els.questionInput.style.height = "auto";
 
-  appendMessage("user", question);
-  const { row, bubble } = appendMessage("assistant", "Reading your files...");
+  let userRow;
+  let botRefs;
+  if (reuseRows) {
+    userRow = reuseRows.userRow;
+    botRefs = reuseRows.botRefs;
+    const oldRetry = botRefs.row.querySelector(".retry-btn");
+    if (oldRetry) oldRetry.remove();
+    botRefs.bubble.innerHTML = renderMarkdown("Retrying...");
+  } else {
+    els.questionInput.value = "";
+    els.questionInput.style.height = "auto";
+    userRow = appendMessage("user", question).row;
+    botRefs = appendMessage("assistant", "Reading your files...");
+  }
 
   const docIds =
     state.selectedDocIds.size > 0 && state.selectedDocIds.size < state.documents.length
@@ -370,6 +427,8 @@ async function sendQuestion(questionText) {
         question,
         provider: state.provider,
         model: state.model || null,
+        style: state.style,
+        custom_instruction: state.customInstruction.trim() || null,
         doc_ids: docIds,
         history: state.history.slice(-6),
       }),
@@ -401,7 +460,7 @@ async function sendQuestion(questionText) {
           retrievedSources = evt.sources || [];
         } else if (evt.type === "token") {
           fullAnswer += evt.content;
-          bubble.innerHTML = renderMarkdown(fullAnswer);
+          botRefs.bubble.innerHTML = renderMarkdown(fullAnswer);
           els.messages.scrollTop = els.messages.scrollHeight;
         } else if (evt.type === "error") {
           throw new Error(evt.detail || "Something went wrong");
@@ -410,15 +469,22 @@ async function sendQuestion(questionText) {
     }
 
     if (!fullAnswer) {
-      fullAnswer = "No answer received. Check your model connection in Settings.";
-      bubble.innerHTML = renderMarkdown(fullAnswer);
+      throw new Error("No answer received. Check your model connection in Settings.");
     }
 
-    attachSources(row, retrievedSources);
+    attachSources(botRefs.row, retrievedSources);
     state.history.push({ role: "user", content: question });
     state.history.push({ role: "assistant", content: fullAnswer });
   } catch (err) {
-    bubble.innerHTML = renderMarkdown(`**Could not answer:** ${err.message}`);
+    botRefs.bubble.innerHTML = renderMarkdown(`**Could not answer:** ${err.message}`);
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "retry-btn";
+    retryBtn.textContent = "Retry";
+    retryBtn.addEventListener("click", () => {
+      sendQuestion(question, { userRow, botRefs });
+    });
+    botRefs.row.appendChild(retryBtn);
   } finally {
     state.busy = false;
     els.sendBtn.disabled = false;
@@ -430,12 +496,25 @@ async function sendQuestion(questionText) {
 els.pillBtns.forEach((btn) => {
   btn.addEventListener("click", () => {
     state.provider = btn.dataset.provider;
+    state.hasSavedProvider = true;
     localStorage.setItem("rag_provider", state.provider);
     renderProviderUI();
     if (state.provider === "gemini" && state.health && !state.health.gemini.configured) {
       els.settingsModal.hidden = false;
     }
   });
+});
+
+els.styleSelect.value = state.style;
+els.styleSelect.addEventListener("change", () => {
+  state.style = els.styleSelect.value;
+  localStorage.setItem("rag_style", state.style);
+});
+
+els.customInstructionInput.value = state.customInstruction;
+els.customInstructionInput.addEventListener("input", () => {
+  state.customInstruction = els.customInstructionInput.value;
+  localStorage.setItem("rag_custom_instruction", state.customInstruction);
 });
 
 els.settingsBtn.addEventListener("click", () => {

@@ -1,5 +1,6 @@
 """Async REST client for the Google Gemini API (Online mode)."""
 
+import asyncio
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -23,23 +24,26 @@ class GeminiClient:
         "gemini-embedding-001",
         "gemini-embedding-2",
     ]
+    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
     def __init__(
         self,
         api_key: str = "",
         base_url: str = "https://generativelanguage.googleapis.com/v1beta",
         timeout: float = 120.0,
+        max_retries: int = 2,
     ) -> None:
         self.default_api_key = api_key.strip()
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
 
     def _resolve_key(self, api_key: Optional[str] = None) -> str:
         key = (api_key or self.default_api_key).strip()
         if not key:
             raise GeminiError(
                 "Gemini API key is required for Online mode. "
-                "Enter your API key in the UI or set the GEMINI_API_KEY environment variable."
+                "Open Settings and paste your Google AI Studio API key."
             )
         return key
 
@@ -82,8 +86,6 @@ class GeminiClient:
         }
         model_path = model if model.startswith("models/") else f"models/{model}"
 
-        # gemini-embedding-2 aggregates multiple contents per embedContent call,
-        # so batchEmbedContents is used for gemini-embedding-001 and single calls for others.
         if model_path == "models/gemini-embedding-001":
             return await self._batch_embed_contents(texts, model_path, headers)
         return await self._single_embed_loop(texts, model_path, headers)
@@ -183,7 +185,7 @@ class GeminiClient:
         model: str = "gemini-4-hydrogen",
         api_key: Optional[str] = None,
     ) -> str:
-        """Send a non-streaming request to Gemini Interactions API."""
+        """Send a non-streaming request to Gemini Interactions API with transient retry."""
         key = self._resolve_key(api_key)
         headers = {
             "x-goog-api-key": key,
@@ -195,25 +197,37 @@ class GeminiClient:
             "input": user_prompt,
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{self.base_url}/interactions",
-                    headers=headers,
-                    json=payload,
-                )
-                if resp.status_code >= 400:
-                    raise GeminiError(
-                        f"Gemini chat failed ({resp.status_code}): "
-                        f"{self._extract_error_message(resp)}"
+        last_err: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/interactions",
+                        headers=headers,
+                        json=payload,
                     )
-                data = resp.json()
-        except GeminiError:
-            raise
-        except httpx.HTTPError as exc:
-            raise GeminiError(f"Gemini chat request failed: {exc}") from exc
+                    if (
+                        resp.status_code in self.RETRYABLE_STATUS_CODES
+                        and attempt < self.max_retries
+                    ):
+                        await asyncio.sleep(1.2 * (attempt + 1))
+                        continue
+                    if resp.status_code >= 400:
+                        raise GeminiError(
+                            f"Gemini chat failed ({resp.status_code}): "
+                            f"{self._extract_error_message(resp)}"
+                        )
+                    return self._extract_interaction_text(resp.json())
+            except GeminiError:
+                raise
+            except httpx.HTTPError as exc:
+                last_err = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(1.2 * (attempt + 1))
+                    continue
+                raise GeminiError(f"Gemini chat request failed: {exc}") from exc
 
-        return self._extract_interaction_text(data)
+        raise GeminiError(f"Gemini chat request failed: {last_err}")
 
     async def chat_stream(
         self,
@@ -222,7 +236,7 @@ class GeminiClient:
         model: str = "gemini-4-hydrogen",
         api_key: Optional[str] = None,
     ) -> AsyncIterator[str]:
-        """Stream text tokens from Gemini Interactions API via SSE."""
+        """Stream text tokens from Gemini Interactions API via SSE with 503 retry."""
         key = self._resolve_key(api_key)
         headers = {
             "x-goog-api-key": key,
@@ -235,39 +249,53 @@ class GeminiClient:
             "stream": True,
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/interactions",
-                    headers=headers,
-                    json=payload,
-                ) as resp:
-                    if resp.status_code >= 400:
-                        await resp.aread()
-                        raise GeminiError(
-                            f"Gemini stream failed ({resp.status_code}): "
-                            f"{self._extract_error_message(resp)}"
-                        )
-                    async for raw_line in resp.aiter_lines():
-                        line = raw_line.strip()
-                        if not line or not line.startswith("data:"):
+        for attempt in range(self.max_retries + 1):
+            yielded_any = False
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/interactions",
+                        headers=headers,
+                        json=payload,
+                    ) as resp:
+                        if (
+                            resp.status_code in self.RETRYABLE_STATUS_CODES
+                            and attempt < self.max_retries
+                        ):
+                            await resp.aread()
+                            await asyncio.sleep(1.2 * (attempt + 1))
                             continue
-                        payload_str = line[len("data:") :].strip()
-                        if not payload_str or payload_str == "[DONE]":
-                            continue
-                        event = json.loads(payload_str)
-                        event_type = event.get("event_type")
-                        if event_type == "error":
-                            err = event.get("error", {})
+                        if resp.status_code >= 400:
+                            await resp.aread()
                             raise GeminiError(
-                                str(err.get("message", "Gemini streaming error"))
+                                f"Gemini stream failed ({resp.status_code}): "
+                                f"{self._extract_error_message(resp)}"
                             )
-                        if event_type == "step.delta":
-                            delta = event.get("delta", {})
-                            if delta.get("type") == "text" and delta.get("text"):
-                                yield str(delta["text"])
-        except GeminiError:
-            raise
-        except httpx.HTTPError as exc:
-            raise GeminiError(f"Gemini streaming request failed: {exc}") from exc
+                        async for raw_line in resp.aiter_lines():
+                            line = raw_line.strip()
+                            if not line or not line.startswith("data:"):
+                                continue
+                            payload_str = line[len("data:") :].strip()
+                            if not payload_str or payload_str == "[DONE]":
+                                continue
+                            event = json.loads(payload_str)
+                            event_type = event.get("event_type")
+                            if event_type == "error":
+                                err = event.get("error", {})
+                                raise GeminiError(
+                                    str(err.get("message", "Gemini streaming error"))
+                                )
+                            if event_type == "step.delta":
+                                delta = event.get("delta", {})
+                                if delta.get("type") == "text" and delta.get("text"):
+                                    yielded_any = True
+                                    yield str(delta["text"])
+                        return
+            except GeminiError:
+                raise
+            except httpx.HTTPError as exc:
+                if not yielded_any and attempt < self.max_retries:
+                    await asyncio.sleep(1.2 * (attempt + 1))
+                    continue
+                raise GeminiError(f"Gemini streaming request failed: {exc}") from exc

@@ -49,6 +49,12 @@
             <button type="button" class="pill-btn active" data-provider="ollama">Offline</button>
             <button type="button" class="pill-btn" data-provider="gemini">Online</button>
           </div>
+          <select id="styleSelect" class="style-select" title="Explanation style">
+            <option value="simple">Style: Simple</option>
+            <option value="detailed">Style: Detailed</option>
+            <option value="hinglish">Style: Hinglish</option>
+            <option value="notes">Style: Exam Notes</option>
+          </select>
           <button type="button" class="status-pill" id="settingsBtn" title="Model & API settings">
             <span class="dot" id="statusDot"></span>
             <span id="statusLabel">Setup</span>
@@ -62,11 +68,11 @@
       <div class="chat-scroll" id="messages">
         <div class="welcome" id="emptyState">
           <h1>What would you like to know?</h1>
-          <p>Upload any PDF or notes, then ask questions in plain language.</p>
+          <p>Upload any PDF or notes, pick an explanation style, and ask anything.</p>
           <div class="suggestions">
-            <button type="button" class="suggestion-btn">Summarize this document</button>
+            <button type="button" class="suggestion-btn">Explain this PDF simply with examples</button>
             <button type="button" class="suggestion-btn">List the key takeaways</button>
-            <button type="button" class="suggestion-btn">Explain the main topic simply</button>
+            <button type="button" class="suggestion-btn">Summarize step by step</button>
           </div>
         </div>
       </div>
@@ -111,6 +117,15 @@
         <div class="field">
           <label for="modelSelect">AI Model</label>
           <select id="modelSelect"></select>
+        </div>
+
+        <div class="field">
+          <label for="customInstructionInput">How should the AI explain? (Optional)</label>
+          <textarea
+            id="customInstructionInput"
+            rows="2"
+            placeholder="e.g., Explain like I'm a beginner, use real-life analogies, keep it short..."
+          ></textarea>
         </div>
       </div>
 

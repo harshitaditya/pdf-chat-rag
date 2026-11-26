@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from backend.config import STATIC_DIR, Settings, settings as default_settings
 from backend.gemini_client import GeminiClient, GeminiError
 from backend.ollama_client import OllamaClient, OllamaError
-from backend.rag import ProviderName, RAGService
+from backend.rag import ProviderName, RAGService, StyleName
 from backend.vector_store import VectorStore
 
 
@@ -29,6 +29,8 @@ class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
     provider: ProviderName = "ollama"
     model: Optional[str] = None
+    style: StyleName = "simple"
+    custom_instruction: Optional[str] = None
     doc_ids: Optional[List[str]] = None
     history: Optional[List[HistoryMessage]] = None
 
@@ -96,7 +98,7 @@ def create_app(
     app = FastAPI(
         title="Hybrid Local & Cloud Full-PDF Chat",
         description="Full-PDF & Notes Q&A powered by Offline Ollama and Online Gemini API.",
-        version="0.3.0",
+        version="0.4.0",
     )
 
     app.add_middleware(
@@ -244,6 +246,8 @@ def create_app(
                 question=req.question,
                 provider=req.provider,
                 model=req.model,
+                style=req.style,
+                custom_instruction=req.custom_instruction,
                 doc_ids=req.doc_ids,
                 history=history_dicts,
                 api_key=x_gemini_api_key,
@@ -286,6 +290,8 @@ def create_app(
                     question=req.question,
                     provider=req.provider,
                     model=req.model,
+                    style=req.style,
+                    custom_instruction=req.custom_instruction,
                     doc_ids=req.doc_ids,
                     history=history_dicts,
                     api_key=x_gemini_api_key,
