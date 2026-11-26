@@ -145,13 +145,20 @@ function renderMarkdown(rawText) {
   return rendered || "<p></p>";
 }
 
+const MODEL_LABELS = {
+  "gemini-4-hydrogen": "gemini-4-hydrogen (Recommended • Free tier)",
+  "gemini-3.5-flash-lite": "gemini-3.5-flash-lite (Fastest • Free tier)",
+  "gemini-4-neon": "gemini-4-neon (Paid tier)",
+  "gemini-4-carbon": "gemini-4-carbon (Paid tier)",
+};
+
 function populateModelSelect(models, preferred) {
   const prev = state.model;
   els.modelSelect.innerHTML = "";
   models.forEach((m) => {
     const opt = document.createElement("option");
     opt.value = m;
-    opt.textContent = m;
+    opt.textContent = MODEL_LABELS[m] || m;
     els.modelSelect.appendChild(opt);
   });
 
@@ -204,7 +211,7 @@ function renderProviderUI() {
       els.statusDot.className = "dot err";
       els.statusLabel.textContent = "Ollama Off";
       els.statusDetail.textContent =
-        "Ollama is not running on this PC. Start Ollama or switch to Online mode.";
+        "Offline mode needs Ollama running on your own PC. On Railway/cloud, switch to Online mode at the top.";
     }
   }
 }
