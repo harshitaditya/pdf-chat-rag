@@ -14,6 +14,14 @@ from backend.ollama_client import OllamaClient
 from backend.parser import PageText, chunk_pages, extract_pages
 from backend.rag import RAGService
 from backend.vector_store import VectorStore
+from backend.web_search import (
+    WebHit,
+    WebSearchClient,
+    _parse_bing_news_rss,
+    _parse_google_news_rss,
+    _parse_wikipedia_json,
+    should_search_web,
+)
 
 
 class FakeOllamaClient(OllamaClient):
@@ -47,6 +55,26 @@ class FakeOllamaClient(OllamaClient):
         self.chat_calls.append(messages)
         for part in ["Hello! ", "Here is your answer."]:
             yield part
+
+
+class FakeWebSearchClient(WebSearchClient):
+    """Deterministic fake for free backend web search."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: List[str] = []
+
+    async def search(self, query: str, max_results: int = 6) -> List[WebHit]:
+        self.queries.append(query)
+        return [
+            WebHit(
+                title="IND vs SL Live Score - Example Sports",
+                url="https://example.com/live-score",
+                snippet="India 159/2 in 16 overs in Doha semi-final.",
+                source="example.com",
+                published_at="Thu, 26 Nov 2026 10:15 GMT",
+            )
+        ]
 
 
 class FakeGeminiClient(GeminiClient):
@@ -159,6 +187,7 @@ def test_general_chat_without_pdfs_and_with_optional_pdf(tmp_path: Path) -> None
     )
     fake_ollama = FakeOllamaClient()
     fake_gemini = FakeGeminiClient(api_key="test-key")
+    fake_web = FakeWebSearchClient()
     rag = RAGService(
         store=VectorStore(cfg.db_path),
         ollama=fake_ollama,
@@ -166,29 +195,33 @@ def test_general_chat_without_pdfs_and_with_optional_pdf(tmp_path: Path) -> None
         settings=cfg,
         offline_direct_char_limit=600,
         offline_section_char_limit=350,
+        web_search_client=fake_web,
     )
     app = create_app(app_settings=cfg, rag_service=rag)
     client = TestClient(app)
 
-    # 1. Pure general chat WITHOUT any uploaded PDFs (Online Gemini)
+    # 1. Pure general chat WITHOUT any uploaded PDFs (Online Gemini + Live Web Search)
     gen_resp = client.post(
         "/chat/stream",
         json={
-            "question": "Explain REST APIs simply",
+            "question": "What is the current India score?",
             "provider": "gemini",
             "style": "hinglish",
-            "custom_instruction": "Give a real-life example",
+            "custom_instruction": "Give a concise update",
             "doc_ids": [],
         },
     )
     assert gen_resp.status_code == 200
+    assert '"type": "status"' in gen_resp.text
     assert '"type": "token"' in gen_resp.text
     assert '"type": "web_sources"' in gen_resp.text
+    assert "https://example.com/live-score" in gen_resp.text
     assert '"type": "done"' in gen_resp.text
-    assert fake_gemini.search_flags[-1] is True
-    assert "REST APIs simply" in fake_gemini.prompts[-1]
+    assert fake_gemini.search_flags[-1] is False
+    assert "current India score" in fake_web.queries[-1]
+    assert "India 159/2" in fake_gemini.prompts[-1]
     assert "Hinglish" in fake_gemini.system_instructions[-1]
-    assert "Give a real-life example" in fake_gemini.system_instructions[-1]
+    assert "Give a concise update" in fake_gemini.system_instructions[-1]
 
     # 2. Pure general chat WITHOUT any uploaded PDFs (Offline Ollama)
     off_gen = client.post(
@@ -275,3 +308,36 @@ def test_gemini_google_search_citation_extraction_and_fallback() -> None:
     assert citations == [{"title": "uefa.com", "url": "https://www.uefa.com/euro2024"}]
     assert GeminiClient._is_search_tool_rejected(400, "google_search tool not supported") is True
     assert GeminiClient._is_search_tool_rejected(429, "Quota exceeded for model") is False
+    assert "Retry" in GeminiClient._format_rate_limit_message(429, "Quota exceeded")
+
+
+def test_free_web_search_parsers_and_filters() -> None:
+    assert should_search_web("hii") is False
+    assert should_search_web("hello!") is False
+    assert should_search_web("summarize this pdf", has_attached_docs=True) is False
+    assert should_search_web("whats the current india score") is True
+
+    bing_xml = """<?xml version="1.0"?><rss><channel><item>
+      <title>India Live Score</title>
+      <link>http://www.bing.com/news/apiclick.aspx?url=https%3a%2f%2fexample.com%2fscore</link>
+      <description>&lt;b&gt;IND 159/2&lt;/b&gt; in semi-final</description>
+      <pubDate>Thu, 26 Nov 2026 10:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+    bing_hits = _parse_bing_news_rss(bing_xml)
+    assert len(bing_hits) == 1
+    assert bing_hits[0].url == "https://example.com/score"
+    assert "IND 159/2" in bing_hits[0].snippet
+
+    gnews_xml = """<?xml version="1.0"?><rss><channel><item>
+      <title>IND vs SL - Cricbuzz</title>
+      <link>https://news.google.com/rss/articles/abc</link>
+      <pubDate>Thu, 26 Nov 2026 10:15:00 GMT</pubDate>
+      <source>Cricbuzz</source>
+    </item></channel></rss>"""
+    g_hits = _parse_google_news_rss(gnews_xml)
+    assert g_hits[0].source == "Cricbuzz"
+
+    wiki_json = {"query": {"search": [{"title": "Docker", "snippet": "<span>OS-level</span> containers"}]}}
+    w_hits = _parse_wikipedia_json(wiki_json)
+    assert w_hits[0].url == "https://en.wikipedia.org/wiki/Docker"
+    assert w_hits[0].snippet == "OS-level containers"

@@ -10,6 +10,7 @@ from backend.gemini_client import GeminiClient
 from backend.ollama_client import OllamaClient
 from backend.parser import chunk_pages, extract_pages
 from backend.vector_store import DocumentRecord, SearchResult, VectorStore
+from backend.web_search import WebSearchClient, format_web_context, should_search_web
 
 
 ProviderName = Literal["ollama", "gemini"]
@@ -23,8 +24,10 @@ BASE_SYSTEM_PROMPT = (
     "You are a helpful, knowledgeable AI assistant and friendly teacher. "
     "You can answer any question across coding, science, math, study topics, writing, "
     "and general knowledge. "
-    "If attached document excerpts are also provided below, use them carefully alongside "
-    "your knowledge and cite [filename | Page X] naturally when referencing information from them."
+    "If attached document excerpts are provided below, use them carefully alongside "
+    "your knowledge and cite [filename | Page X] naturally when referencing information from them. "
+    "If live web search results are provided below, use those up-to-date headlines, scores, dates, "
+    "and facts directly to answer clearly instead of claiming you lack internet access."
 )
 
 STYLE_INSTRUCTIONS: Dict[str, str] = {
@@ -128,6 +131,7 @@ def build_gemini_input(
     question: str,
     context_text: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
+    web_context: Optional[str] = None,
 ) -> str:
     """Build a structured input string for Gemini Interactions API."""
     sections: List[str] = []
@@ -142,6 +146,9 @@ def build_gemini_input(
 
     if context_text:
         sections.append(f"Attached document contents:\n\n{context_text}")
+
+    if web_context:
+        sections.append(web_context)
 
     sections.append(question if not sections else f"User question: {question}")
     return "\n\n".join(sections)
@@ -194,6 +201,7 @@ class RAGService:
         settings: Settings,
         offline_direct_char_limit: int = OFFLINE_DIRECT_CHAR_LIMIT,
         offline_section_char_limit: int = OFFLINE_SECTION_CHAR_LIMIT,
+        web_search_client: Optional[WebSearchClient] = None,
     ) -> None:
         self.store = store
         self.ollama = ollama
@@ -201,6 +209,7 @@ class RAGService:
         self.settings = settings
         self.offline_direct_char_limit = offline_direct_char_limit
         self.offline_section_char_limit = offline_section_char_limit
+        self.web_search = web_search_client or WebSearchClient()
         self.settings.upload_dir.mkdir(parents=True, exist_ok=True)
 
     def _default_chat_model(self, provider: ProviderName) -> str:
@@ -314,6 +323,25 @@ class RAGService:
         )
         return synthesized, "Notes extracted across attached document sections"
 
+    async def _gather_web_context(
+        self,
+        question: str,
+        provider: ProviderName,
+        web_search_enabled: bool,
+        has_docs: bool,
+    ) -> tuple[Optional[str], List[Dict[str, str]]]:
+        """Fetch free live web search results when Online Web Search is active."""
+        if provider != "gemini" or not web_search_enabled:
+            return None, []
+        if not should_search_web(question, has_attached_docs=has_docs):
+            return None, []
+        hits = await self.web_search.search(question, max_results=6)
+        if not hits:
+            return None, []
+        return format_web_context(hits), [
+            {"title": h.title, "url": h.url} for h in hits
+        ]
+
     async def ask(
         self,
         question: str,
@@ -326,7 +354,7 @@ class RAGService:
         api_key: Optional[str] = None,
         web_search: bool = True,
     ) -> ChatResponse:
-        """Answer any question directly, optionally using documents and Google Search."""
+        """Answer any question directly, optionally using documents and live web search."""
         chosen_model = model or self._default_chat_model(provider)
         sources = self.load_full_documents(doc_ids=doc_ids)
         sys_prompt = build_system_prompt(style=style, custom_instruction=custom_instruction)
@@ -339,18 +367,27 @@ class RAGService:
 
         web_sources: List[Dict[str, str]] = []
         if provider == "gemini":
+            web_context, web_sources = await self._gather_web_context(
+                question=question,
+                provider=provider,
+                web_search_enabled=web_search,
+                has_docs=bool(sources),
+            )
             user_input = build_gemini_input(
                 question=question,
                 context_text=context_text,
                 history=history,
+                web_context=web_context,
             )
-            answer, web_sources = await self.gemini.chat_with_sources(
+            answer, native_sources = await self.gemini.chat_with_sources(
                 system_instruction=sys_prompt,
                 user_prompt=user_input,
                 model=chosen_model,
                 api_key=api_key,
-                use_google_search=web_search,
+                use_google_search=False,
             )
+            if native_sources and not web_sources:
+                web_sources = native_sources
         else:
             messages = build_messages(
                 question=question,
@@ -381,7 +418,7 @@ class RAGService:
         api_key: Optional[str] = None,
         web_search: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Stream answer for any question, optionally using documents and Google Search."""
+        """Stream answer for any question, optionally using documents and live web search."""
         chosen_model = model or self._default_chat_model(provider)
         sources = self.load_full_documents(doc_ids=doc_ids)
 
@@ -401,19 +438,33 @@ class RAGService:
         )
 
         if provider == "gemini":
+            web_context: Optional[str] = None
+            web_sources: List[Dict[str, str]] = []
+            if web_search and should_search_web(question, has_attached_docs=bool(sources)):
+                yield {"type": "status", "content": "Searching the web..."}
+                web_context, web_sources = await self._gather_web_context(
+                    question=question,
+                    provider=provider,
+                    web_search_enabled=web_search,
+                    has_docs=bool(sources),
+                )
+
             user_input = build_gemini_input(
                 question=question,
                 context_text=context_text,
                 history=history,
+                web_context=web_context,
             )
             async for evt in self.gemini.chat_stream_events(
                 system_instruction=sys_prompt,
                 user_prompt=user_input,
                 model=chosen_model,
                 api_key=api_key,
-                use_google_search=web_search,
+                use_google_search=False,
             ):
                 yield evt
+            if web_sources:
+                yield {"type": "web_sources", "web_sources": web_sources}
         else:
             messages = build_messages(
                 question=question,

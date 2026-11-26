@@ -24,7 +24,7 @@ class GeminiClient:
         "gemini-embedding-001",
         "gemini-embedding-2",
     ]
-    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+    TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
 
     def __init__(
         self,
@@ -222,6 +222,15 @@ class GeminiClient:
         return text
 
     @staticmethod
+    def _format_rate_limit_message(status_code: int, message: str) -> str:
+        if status_code == 429:
+            return (
+                f"{message} — Wait ~20-30s and click Retry, or switch between "
+                "gemini-4-hydrogen and gemini-3.5-flash-lite in Settings."
+            )
+        return message
+
+    @staticmethod
     def _is_search_tool_rejected(status_code: int, message: str) -> bool:
         """Detect when an API tier rejects the google_search tool specifically."""
         msg = message.lower()
@@ -266,16 +275,9 @@ class GeminiClient:
                         json=payload,
                     )
                     if (
-                        resp.status_code in self.RETRYABLE_STATUS_CODES
+                        resp.status_code in self.TRANSIENT_STATUS_CODES
                         and attempt < self.max_retries
                     ):
-                        err_msg = self._extract_error_message(resp)
-                        if (
-                            payload.get("tools")
-                            and self._is_search_tool_rejected(resp.status_code, err_msg)
-                        ):
-                            payload.pop("tools", None)
-                            continue
                         await asyncio.sleep(1.2 * (attempt + 1))
                         continue
                     if resp.status_code >= 400:
@@ -286,8 +288,9 @@ class GeminiClient:
                         ):
                             payload.pop("tools", None)
                             continue
+                        friendly = self._format_rate_limit_message(resp.status_code, err_msg)
                         raise GeminiError(
-                            f"Gemini chat failed ({resp.status_code}): {err_msg}"
+                            f"Gemini chat failed ({resp.status_code}): {friendly}"
                         )
                     return self._extract_interaction_result(resp.json())
             except GeminiError:
@@ -368,13 +371,14 @@ class GeminiClient:
                                 }
                                 continue
                             if (
-                                resp.status_code in self.RETRYABLE_STATUS_CODES
+                                resp.status_code in self.TRANSIENT_STATUS_CODES
                                 and attempt < self.max_retries
                             ):
                                 await asyncio.sleep(1.2 * (attempt + 1))
                                 continue
+                            friendly = self._format_rate_limit_message(resp.status_code, err_msg)
                             raise GeminiError(
-                                f"Gemini stream failed ({resp.status_code}): {err_msg}"
+                                f"Gemini stream failed ({resp.status_code}): {friendly}"
                             )
                         async for raw_line in resp.aiter_lines():
                             line = raw_line.strip()
