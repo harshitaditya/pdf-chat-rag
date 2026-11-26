@@ -3,6 +3,7 @@ const savedProvider = localStorage.getItem("rag_provider");
 const state = {
   provider: savedProvider || "ollama",
   hasSavedProvider: Boolean(savedProvider),
+  webSearch: localStorage.getItem("rag_web_search") !== "false",
   style: localStorage.getItem("rag_style") || "simple",
   customInstruction: localStorage.getItem("rag_custom_instruction") || "",
   apiKey: localStorage.getItem("rag_gemini_key") || "",
@@ -27,6 +28,7 @@ const els = {
   noFilesMsg: document.getElementById("noFilesMsg"),
   pillBtns: document.querySelectorAll(".pill-btn"),
   styleSelect: document.getElementById("styleSelect"),
+  webSearchToggle: document.getElementById("webSearchToggle"),
   settingsBtn: document.getElementById("settingsBtn"),
   statusDot: document.getElementById("statusDot"),
   statusLabel: document.getElementById("statusLabel"),
@@ -68,6 +70,10 @@ function formatInline(text) {
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(
+      /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    )
     .replace(
       /\[([^\]|]+ \| Page [0-9, ]+)\]/g,
       '<span class="cite-pill">[$1]</span>'
@@ -175,6 +181,11 @@ function renderProviderUI() {
 
   const isGemini = state.provider === "gemini";
   els.apiKeyGroup.hidden = !isGemini;
+  if (els.webSearchToggle) {
+    els.webSearchToggle.hidden = !isGemini;
+    els.webSearchToggle.classList.toggle("active", state.webSearch);
+    els.webSearchToggle.setAttribute("aria-pressed", String(state.webSearch));
+  }
 
   const health = state.health;
   if (!health) return;
@@ -393,6 +404,37 @@ function attachSources(row, sources) {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
+function attachWebSources(row, webSources) {
+  if (!webSources || webSources.length === 0) return;
+
+  const valid = webSources.filter(
+    (s) => s && typeof s.url === "string" && /^https?:\/\//i.test(s.url)
+  );
+  if (valid.length === 0) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "web-sources-wrap";
+
+  const label = document.createElement("span");
+  label.className = "web-sources-label";
+  label.textContent = "Web sources:";
+  wrap.appendChild(label);
+
+  valid.forEach((src) => {
+    const a = document.createElement("a");
+    a.className = "web-source-chip";
+    a.href = src.url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = src.title || src.url;
+    a.title = src.url;
+    wrap.appendChild(a);
+  });
+
+  row.appendChild(wrap);
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
 async function sendQuestion(questionText, reuseRows = null) {
   const question = questionText.trim();
   if (!question || state.busy) return;
@@ -421,6 +463,7 @@ async function sendQuestion(questionText, reuseRows = null) {
 
   let fullAnswer = "";
   let retrievedSources = [];
+  let webSources = [];
 
   try {
     const resp = await fetch("/chat/stream", {
@@ -437,6 +480,7 @@ async function sendQuestion(questionText, reuseRows = null) {
         custom_instruction: state.customInstruction.trim() || null,
         doc_ids: docIds,
         history: state.history.slice(-6),
+        web_search: state.provider === "gemini" ? state.webSearch : false,
       }),
     });
 
@@ -464,10 +508,14 @@ async function sendQuestion(questionText, reuseRows = null) {
 
         if (evt.type === "sources") {
           retrievedSources = evt.sources || [];
+        } else if (evt.type === "status" && !fullAnswer) {
+          botRefs.bubble.innerHTML = renderMarkdown(evt.content || "Working...");
         } else if (evt.type === "token") {
           fullAnswer += evt.content;
           botRefs.bubble.innerHTML = renderMarkdown(fullAnswer);
           els.messages.scrollTop = els.messages.scrollHeight;
+        } else if (evt.type === "web_sources") {
+          webSources = evt.web_sources || [];
         } else if (evt.type === "error") {
           throw new Error(evt.detail || "Something went wrong");
         }
@@ -479,6 +527,7 @@ async function sendQuestion(questionText, reuseRows = null) {
     }
 
     attachSources(botRefs.row, retrievedSources);
+    attachWebSources(botRefs.row, webSources);
     state.history.push({ role: "user", content: question });
     state.history.push({ role: "assistant", content: fullAnswer });
   } catch (err) {
@@ -516,6 +565,14 @@ els.styleSelect.addEventListener("change", () => {
   state.style = els.styleSelect.value;
   localStorage.setItem("rag_style", state.style);
 });
+
+if (els.webSearchToggle) {
+  els.webSearchToggle.addEventListener("click", () => {
+    state.webSearch = !state.webSearch;
+    localStorage.setItem("rag_web_search", String(state.webSearch));
+    renderProviderUI();
+  });
+}
 
 els.customInstructionInput.value = state.customInstruction;
 els.customInstructionInput.addEventListener("input", () => {

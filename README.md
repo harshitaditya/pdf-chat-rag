@@ -7,7 +7,7 @@ A clean, simple AI chat web app where you can **ask anything** (coding, study do
 - **Ask Anything (General Chat):** Works right away without needing to upload any files—supports conversation history, streaming replies, and clean Markdown formatting.
 - **Explanation Styles & Custom Instructions:** Switch between **Simple**, **Detailed**, **Hinglish**, and **Exam Notes**, or add your own custom instructions in Settings.
 - **Optional File Context:** Attach `.pdf`, `.md`, or `.txt` files anytime to discuss or summarize their full contents with page citations.
-- **Dual Mode Switcher:** Toggle between **Online (Gemini)** (`gemini-4-hydrogen`, `gemini-3.5-flash-lite`, etc.) and **Offline (Ollama)** (`qwen2.5:7b`, `gemma4:12b`, etc.).
+- **Dual Mode Switcher:** Toggle between **Online (Gemini)** (`gemini-4-hydrogen`, `gemini-3.5-flash-lite`, etc., with **Google Search grounding** + clickable web citations) and **Offline (Ollama)** (`qwen2.5:7b`, `gemma4:12b`, etc.).
 
 ## Project Structure
 

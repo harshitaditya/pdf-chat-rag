@@ -33,6 +33,14 @@ class ChatRequest(BaseModel):
     custom_instruction: Optional[str] = None
     doc_ids: Optional[List[str]] = None
     history: Optional[List[HistoryMessage]] = None
+    web_search: bool = True
+
+
+class WebSourceOut(BaseModel):
+    """Web search citation metadata returned by Gemini Google Search grounding."""
+
+    title: str
+    url: str
 
 
 class SourceOut(BaseModel):
@@ -54,6 +62,7 @@ class ChatResponseOut(BaseModel):
     provider: ProviderName
     model: str
     sources: List[SourceOut]
+    web_sources: List[WebSourceOut] = []
 
 
 class DocumentOut(BaseModel):
@@ -251,6 +260,7 @@ def create_app(
                 doc_ids=req.doc_ids,
                 history=history_dicts,
                 api_key=x_gemini_api_key,
+                web_search=req.web_search,
             )
         except (OllamaError, GeminiError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -270,6 +280,10 @@ def create_app(
                     text=s.text,
                 )
                 for s in res.sources
+            ],
+            web_sources=[
+                WebSourceOut(title=w["title"], url=w["url"])
+                for w in res.web_sources
             ],
         )
 
@@ -295,6 +309,7 @@ def create_app(
                     doc_ids=req.doc_ids,
                     history=history_dicts,
                     api_key=x_gemini_api_key,
+                    web_search=req.web_search,
                 ):
                     yield f"data: {json.dumps(event)}\n\n"
             except (OllamaError, GeminiError) as exc:

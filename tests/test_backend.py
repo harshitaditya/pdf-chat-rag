@@ -2,7 +2,7 @@
 
 from io import BytesIO
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -56,31 +56,50 @@ class FakeGeminiClient(GeminiClient):
         super().__init__(api_key=api_key)
         self.prompts: List[str] = []
         self.system_instructions: List[str] = []
+        self.search_flags: List[bool] = []
 
-    async def chat(
+    async def chat_with_sources(
         self,
         system_instruction: str,
         user_prompt: str,
         model: str = "gemini-4-hydrogen",
         api_key: Optional[str] = None,
-    ) -> str:
+        use_google_search: bool = False,
+    ) -> Tuple[str, List[Dict[str, str]]]:
         self._resolve_key(api_key)
         self.system_instructions.append(system_instruction)
         self.prompts.append(user_prompt)
-        return f"Gemini ({model}) response."
+        self.search_flags.append(use_google_search)
+        web_sources = (
+            [{"title": "Example Web Source", "url": "https://example.com/news"}]
+            if use_google_search
+            else []
+        )
+        return f"Gemini ({model}) response.", web_sources
 
-    async def chat_stream(
+    async def chat_stream_events(
         self,
         system_instruction: str,
         user_prompt: str,
         model: str = "gemini-4-hydrogen",
         api_key: Optional[str] = None,
-    ) -> AsyncIterator[str]:
+        use_google_search: bool = False,
+    ) -> AsyncIterator[Dict[str, Any]]:
         self._resolve_key(api_key)
         self.system_instructions.append(system_instruction)
         self.prompts.append(user_prompt)
+        self.search_flags.append(use_google_search)
+        if use_google_search:
+            yield {"type": "status", "content": "Searching Google..."}
         for part in ["REST APIs ", "use HTTP methods."]:
-            yield part
+            yield {"type": "token", "content": part}
+        if use_google_search:
+            yield {
+                "type": "web_sources",
+                "web_sources": [
+                    {"title": "MDN Web Docs", "url": "https://developer.mozilla.org"}
+                ],
+            }
 
 
 def _make_blank_pdf_bytes() -> bytes:
@@ -126,6 +145,7 @@ def test_ui_root_has_ai_chat_and_style_picker(tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert "AI Chat" in resp.text
     assert "styleSelect" in resp.text
+    assert "webSearchToggle" in resp.text
     assert "customInstructionInput" in resp.text
     assert "topKInput" not in resp.text
 
@@ -163,7 +183,9 @@ def test_general_chat_without_pdfs_and_with_optional_pdf(tmp_path: Path) -> None
     )
     assert gen_resp.status_code == 200
     assert '"type": "token"' in gen_resp.text
+    assert '"type": "web_sources"' in gen_resp.text
     assert '"type": "done"' in gen_resp.text
+    assert fake_gemini.search_flags[-1] is True
     assert "REST APIs simply" in fake_gemini.prompts[-1]
     assert "Hinglish" in fake_gemini.system_instructions[-1]
     assert "Give a real-life example" in fake_gemini.system_instructions[-1]
@@ -198,7 +220,7 @@ def test_general_chat_without_pdfs_and_with_optional_pdf(tmp_path: Path) -> None
     assert "B-Tree indexing" in fake_gemini.prompts[-1]
     assert len(with_doc.json()["sources"]) == 1
 
-    # 4. Unselecting doc_ids=[] ignores uploaded file and answers as general chat
+    # 4. Unselecting doc_ids=[] with web_search=False ignores files and omits web sources
     fake_gemini.prompts.clear()
     no_doc = client.post(
         "/chat",
@@ -206,11 +228,50 @@ def test_general_chat_without_pdfs_and_with_optional_pdf(tmp_path: Path) -> None
             "question": "What is Docker?",
             "provider": "gemini",
             "doc_ids": [],
+            "web_search": False,
         },
     )
     assert no_doc.status_code == 200
     assert no_doc.json()["sources"] == []
+    assert no_doc.json()["web_sources"] == []
+    assert fake_gemini.search_flags[-1] is False
     assert "B-Tree indexing" not in fake_gemini.prompts[-1]
 
     # 5. Cleanup
     assert client.delete(f"/documents/{doc_id}").status_code == 200
+
+
+def test_gemini_google_search_citation_extraction_and_fallback() -> None:
+    sample_response = {
+        "steps": [
+            {"type": "google_search_call", "arguments": {"queries": ["Euro 2024 winner"]}},
+            {
+                "type": "model_output",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Spain won Euro 2024.",
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "title": "uefa.com",
+                                "url": "https://www.uefa.com/euro2024",
+                                "start_index": 0,
+                                "end_index": 20,
+                            },
+                            {
+                                "type": "url_citation",
+                                "title": "uefa.com",
+                                "url": "https://www.uefa.com/euro2024",
+                            },
+                        ],
+                    }
+                ],
+            },
+        ]
+    }
+    text, citations = GeminiClient._extract_interaction_result(sample_response)
+    assert text == "Spain won Euro 2024."
+    assert citations == [{"title": "uefa.com", "url": "https://www.uefa.com/euro2024"}]
+    assert GeminiClient._is_search_tool_rejected(400, "google_search tool not supported") is True
+    assert GeminiClient._is_search_tool_rejected(429, "Quota exceeded for model") is False

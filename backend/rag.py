@@ -1,6 +1,6 @@
 """Hybrid AI Chat pipeline supporting general Q&A and optional Full-PDF context in Offline/Online modes."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Sequence
@@ -78,12 +78,13 @@ class IngestResult:
 
 @dataclass(frozen=True)
 class ChatResponse:
-    """Full non-streaming answer with optional supporting document citations."""
+    """Full non-streaming answer with optional document and web search citations."""
 
     answer: str
     provider: ProviderName
     model: str
     sources: List[SearchResult]
+    web_sources: List[Dict[str, str]] = field(default_factory=list)
 
 
 def build_context_block(sources: Sequence[SearchResult]) -> str:
@@ -323,8 +324,9 @@ class RAGService:
         doc_ids: Optional[Sequence[str]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         api_key: Optional[str] = None,
+        web_search: bool = True,
     ) -> ChatResponse:
-        """Answer any question directly, optionally using selected documents as context."""
+        """Answer any question directly, optionally using documents and Google Search."""
         chosen_model = model or self._default_chat_model(provider)
         sources = self.load_full_documents(doc_ids=doc_ids)
         sys_prompt = build_system_prompt(style=style, custom_instruction=custom_instruction)
@@ -335,17 +337,19 @@ class RAGService:
             sources=sources,
         )
 
+        web_sources: List[Dict[str, str]] = []
         if provider == "gemini":
             user_input = build_gemini_input(
                 question=question,
                 context_text=context_text,
                 history=history,
             )
-            answer = await self.gemini.chat(
+            answer, web_sources = await self.gemini.chat_with_sources(
                 system_instruction=sys_prompt,
                 user_prompt=user_input,
                 model=chosen_model,
                 api_key=api_key,
+                use_google_search=web_search,
             )
         else:
             messages = build_messages(
@@ -362,6 +366,7 @@ class RAGService:
             provider=provider,
             model=chosen_model,
             sources=sources,
+            web_sources=web_sources,
         )
 
     async def ask_stream(
@@ -374,8 +379,9 @@ class RAGService:
         doc_ids: Optional[Sequence[str]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         api_key: Optional[str] = None,
+        web_search: bool = True,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Stream answer for any question, optionally grounded in attached documents."""
+        """Stream answer for any question, optionally using documents and Google Search."""
         chosen_model = model or self._default_chat_model(provider)
         sources = self.load_full_documents(doc_ids=doc_ids)
 
@@ -400,13 +406,14 @@ class RAGService:
                 context_text=context_text,
                 history=history,
             )
-            async for token in self.gemini.chat_stream(
+            async for evt in self.gemini.chat_stream_events(
                 system_instruction=sys_prompt,
                 user_prompt=user_input,
                 model=chosen_model,
                 api_key=api_key,
+                use_google_search=web_search,
             ):
-                yield {"type": "token", "content": token}
+                yield evt
         else:
             messages = build_messages(
                 question=question,
