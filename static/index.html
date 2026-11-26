@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Chat</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <!-- Simple Sidebar: Only your files -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="brand">
+          <span class="brand-mark">P</span>
+          <span class="brand-name">PDF Chat</span>
+        </div>
+        <button type="button" class="icon-close mobile-only" id="closeSidebarBtn" aria-label="Close menu">&times;</button>
+      </div>
+
+      <button type="button" class="upload-btn" id="uploadTriggerBtn">
+        + Upload PDF or Notes
+      </button>
+      <input
+        type="file"
+        id="fileInput"
+        accept=".pdf,.md,.markdown,.txt"
+        multiple
+        hidden
+      />
+      <div class="upload-feedback" id="uploadStatus"></div>
+
+      <div class="files-section">
+        <div class="files-header">
+          <span>Your files</span>
+          <button type="button" class="text-btn" id="toggleAllDocsBtn" hidden>All</button>
+        </div>
+        <ul class="file-list" id="docList"></ul>
+        <p class="no-files" id="noFilesMsg">No files yet. Upload a PDF, Markdown, or text file to start.</p>
+      </div>
+    </aside>
+
+    <!-- Main Chat Canvas -->
+    <main class="main">
+      <header class="header">
+        <div class="header-left">
+          <button type="button" class="icon-btn mobile-only" id="menuBtn" aria-label="Open files">&#9776;</button>
+          <div class="mode-pills" role="group" aria-label="Mode">
+            <button type="button" class="pill-btn active" data-provider="ollama">Offline</button>
+            <button type="button" class="pill-btn" data-provider="gemini">Online</button>
+          </div>
+          <button type="button" class="status-pill" id="settingsBtn" title="Model & API settings">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusLabel">Setup</span>
+            <span class="gear">&#9881;</span>
+          </button>
+        </div>
+
+        <button type="button" class="new-chat-btn" id="clearChatBtn">New chat</button>
+      </header>
+
+      <div class="chat-scroll" id="messages">
+        <div class="welcome" id="emptyState">
+          <h1>What would you like to know?</h1>
+          <p>Upload any PDF or notes, then ask questions in plain language.</p>
+          <div class="suggestions">
+            <button type="button" class="suggestion-btn">Summarize this document</button>
+            <button type="button" class="suggestion-btn">List the key takeaways</button>
+            <button type="button" class="suggestion-btn">Explain the main topic simply</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <form class="composer" id="chatForm">
+          <button type="button" class="attach-btn" id="attachBtn" title="Upload PDF or Notes">+</button>
+          <textarea
+            id="questionInput"
+            rows="1"
+            placeholder="Ask a question about your files..."
+            required
+          ></textarea>
+          <button type="submit" class="send-btn" id="sendBtn" aria-label="Send">&#8593;</button>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <!-- Simple Settings Modal -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-header">
+        <h2 id="settingsTitle">Settings</h2>
+        <button type="button" class="icon-close" id="closeSettingsBtn" aria-label="Close">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="status-note" id="statusDetail"></p>
+
+        <div class="field" id="apiKeyGroup" hidden>
+          <label for="apiKeyInput">Gemini API Key (for Online mode)</label>
+          <input
+            type="password"
+            id="apiKeyInput"
+            placeholder="Paste your Gemini API key..."
+            autocomplete="off"
+          />
+          <small id="apiKeyHint">Saved only in this browser.</small>
+        </div>
+
+        <div class="field">
+          <label for="modelSelect">AI Model</label>
+          <select id="modelSelect"></select>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="primary-btn" id="doneSettingsBtn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
