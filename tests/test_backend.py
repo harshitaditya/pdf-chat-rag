@@ -1,4 +1,4 @@
-"""End-to-end tests covering Full-PDF Mode, explanation styles, instant upload, and streaming."""
+"""End-to-end tests covering General Ask-Anything Chat, optional PDF context, styles, and streaming."""
 
 from io import BytesIO
 from pathlib import Path
@@ -36,7 +36,7 @@ class FakeOllamaClient(OllamaClient):
         user_msg = messages[-1]["content"]
         if user_msg.startswith("Section "):
             return "Extracted section fact [big.md | Page 1]."
-        return "Full PDF B-Tree answer [notes.md | Page 1]."
+        return "General or PDF answer from Ollama."
 
     async def chat_stream(
         self,
@@ -45,7 +45,7 @@ class FakeOllamaClient(OllamaClient):
         options: Optional[Dict[str, Any]] = None,
     ) -> AsyncIterator[str]:
         self.chat_calls.append(messages)
-        for part in ["Full ", "PDF ", "streamed answer."]:
+        for part in ["Hello! ", "Here is your answer."]:
             yield part
 
 
@@ -67,7 +67,7 @@ class FakeGeminiClient(GeminiClient):
         self._resolve_key(api_key)
         self.system_instructions.append(system_instruction)
         self.prompts.append(user_prompt)
-        return f"Gemini ({model}) full-document answer [ml.md | Page 1]."
+        return f"Gemini ({model}) response."
 
     async def chat_stream(
         self,
@@ -79,7 +79,7 @@ class FakeGeminiClient(GeminiClient):
         self._resolve_key(api_key)
         self.system_instructions.append(system_instruction)
         self.prompts.append(user_prompt)
-        for part in ["Transformers ", "use self-attention ", "[ml.md | Page 1]."]:
+        for part in ["REST APIs ", "use HTTP methods."]:
             yield part
 
 
@@ -114,7 +114,7 @@ def test_extract_pages_rejects_empty_pdf() -> None:
         raise AssertionError("Expected ValueError for blank PDF")
 
 
-def test_ui_root_has_style_picker_and_no_top_k(tmp_path: Path) -> None:
+def test_ui_root_has_ai_chat_and_style_picker(tmp_path: Path) -> None:
     cfg = Settings(db_path=tmp_path / "rag.db", upload_dir=tmp_path / "uploads")
     app = create_app(
         app_settings=cfg,
@@ -124,13 +124,13 @@ def test_ui_root_has_style_picker_and_no_top_k(tmp_path: Path) -> None:
     client = TestClient(app)
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "PDF Chat" in resp.text
+    assert "AI Chat" in resp.text
     assert "styleSelect" in resp.text
     assert "customInstructionInput" in resp.text
     assert "topKInput" not in resp.text
 
 
-def test_instant_upload_styles_and_map_reduce(tmp_path: Path) -> None:
+def test_general_chat_without_pdfs_and_with_optional_pdf(tmp_path: Path) -> None:
     cfg = Settings(
         db_path=tmp_path / "rag.db",
         upload_dir=tmp_path / "uploads",
@@ -138,8 +138,7 @@ def test_instant_upload_styles_and_map_reduce(tmp_path: Path) -> None:
         chunk_overlap=50,
     )
     fake_ollama = FakeOllamaClient()
-    # Even with NO Gemini API key configured, PDF upload succeeds immediately.
-    fake_gemini = FakeGeminiClient(api_key="")
+    fake_gemini = FakeGeminiClient(api_key="test-key")
     rag = RAGService(
         store=VectorStore(cfg.db_path),
         ollama=fake_ollama,
@@ -151,61 +150,67 @@ def test_instant_upload_styles_and_map_reduce(tmp_path: Path) -> None:
     app = create_app(app_settings=cfg, rag_service=rag)
     client = TestClient(app)
 
-    # 1. Instant upload under gemini provider without needing an API key
-    notes = (
-        b"# Database Notes\n\n"
-        b"B-Tree indexing keeps keys sorted in balanced pages.\n\n"
-        b"ACID guarantees atomicity, consistency, isolation, and durability."
+    # 1. Pure general chat WITHOUT any uploaded PDFs (Online Gemini)
+    gen_resp = client.post(
+        "/chat/stream",
+        json={
+            "question": "Explain REST APIs simply",
+            "provider": "gemini",
+            "style": "hinglish",
+            "custom_instruction": "Give a real-life example",
+            "doc_ids": [],
+        },
     )
+    assert gen_resp.status_code == 200
+    assert '"type": "token"' in gen_resp.text
+    assert '"type": "done"' in gen_resp.text
+    assert "REST APIs simply" in fake_gemini.prompts[-1]
+    assert "Hinglish" in fake_gemini.system_instructions[-1]
+    assert "Give a real-life example" in fake_gemini.system_instructions[-1]
+
+    # 2. Pure general chat WITHOUT any uploaded PDFs (Offline Ollama)
+    off_gen = client.post(
+        "/chat",
+        json={"question": "Write a Python function to reverse a string", "provider": "ollama"},
+    )
+    assert off_gen.status_code == 200
+    assert off_gen.json()["sources"] == []
+    assert "reverse a string" in fake_ollama.chat_calls[-1][-1]["content"]
+
+    # 3. Upload an optional file and chat with it attached
+    notes = b"# Database Notes\n\nB-Tree indexing keeps keys sorted in balanced pages."
     up_resp = client.post(
         "/documents/upload?provider=gemini",
         files=[("files", ("notes.md", notes, "text/markdown"))],
     )
     assert up_resp.status_code == 200
-    doc = up_resp.json()[0]
+    doc_id = up_resp.json()[0]["doc_id"]
 
-    # 2. Ask Online with Hinglish style + custom instruction (passing key via header)
-    on_chat = client.post(
+    with_doc = client.post(
         "/chat",
-        headers={"X-Gemini-Api-Key": "test-header-key"},
         json={
-            "question": "Explain this PDF",
+            "question": "Explain B-Tree from my file",
             "provider": "gemini",
-            "model": "gemini-4-hydrogen",
-            "style": "hinglish",
-            "custom_instruction": "Use real-life examples",
-            "doc_ids": [doc["doc_id"]],
+            "doc_ids": [doc_id],
         },
     )
-    assert on_chat.status_code == 200
-    assert "Hinglish" in fake_gemini.system_instructions[-1]
-    assert "Use real-life examples" in fake_gemini.system_instructions[-1]
+    assert with_doc.status_code == 200
     assert "B-Tree indexing" in fake_gemini.prompts[-1]
+    assert len(with_doc.json()["sources"]) == 1
 
-    # 3. Large doc triggers Offline Map-Reduce and streams
-    big_text = ("Section detail about distributed consensus and Paxos. " * 25).encode()
-    big_up = client.post(
-        "/documents/upload?provider=ollama",
-        files=[("files", ("big.md", big_text, "text/markdown"))],
-    )
-    assert big_up.status_code == 200
-    big_doc = big_up.json()[0]
-
-    fake_ollama.chat_calls.clear()
-    big_stream = client.post(
-        "/chat/stream",
+    # 4. Unselecting doc_ids=[] ignores uploaded file and answers as general chat
+    fake_gemini.prompts.clear()
+    no_doc = client.post(
+        "/chat",
         json={
-            "question": "Summarize every section",
-            "provider": "ollama",
-            "style": "notes",
-            "doc_ids": [big_doc["doc_id"]],
+            "question": "What is Docker?",
+            "provider": "gemini",
+            "doc_ids": [],
         },
     )
-    assert big_stream.status_code == 200
-    assert '"type": "token"' in big_stream.text
-    assert '"type": "done"' in big_stream.text
-    assert len(fake_ollama.chat_calls) >= 3
+    assert no_doc.status_code == 200
+    assert no_doc.json()["sources"] == []
+    assert "B-Tree indexing" not in fake_gemini.prompts[-1]
 
-    # 4. Cleanup
-    assert client.delete(f"/documents/{doc['doc_id']}").status_code == 200
-    assert client.delete(f"/documents/{big_doc['doc_id']}").status_code == 200
+    # 5. Cleanup
+    assert client.delete(f"/documents/{doc_id}").status_code == 200

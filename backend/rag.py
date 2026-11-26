@@ -1,4 +1,4 @@
-"""Hybrid Full-PDF RAG pipeline supporting Offline (Ollama) and Online (Gemini API) modes."""
+"""Hybrid AI Chat pipeline supporting general Q&A and optional Full-PDF context in Offline/Online modes."""
 
 from dataclasses import dataclass
 import hashlib
@@ -20,12 +20,11 @@ OFFLINE_SECTION_CHAR_LIMIT = 18_000
 ONLINE_DIRECT_CHAR_LIMIT = 2_400_000
 
 BASE_SYSTEM_PROMPT = (
-    "You are a helpful, clear teacher and document assistant. "
-    "Base your answers strictly on the provided document contents—do not invent facts "
-    "that aren't in the documents. "
-    "Cite sources naturally at the end of a paragraph or bullet using [filename | Page X] "
-    "(or [filename | Page X, Y]) instead of interrupting every phrase. "
-    "If something asked is not in the documents, say so politely and briefly."
+    "You are a helpful, knowledgeable AI assistant and friendly teacher. "
+    "You can answer any question across coding, science, math, study topics, writing, "
+    "and general knowledge. "
+    "If attached document excerpts are also provided below, use them carefully alongside "
+    "your knowledge and cite [filename | Page X] naturally when referencing information from them."
 )
 
 STYLE_INSTRUCTIONS: Dict[str, str] = {
@@ -36,7 +35,7 @@ STYLE_INSTRUCTIONS: Dict[str, str] = {
     ),
     "detailed": (
         "Give a thorough, step-by-step explanation covering every important concept, "
-        "architecture flow, and detail from the documents. Organize with clear headings."
+        "example, and detail. Organize with clear headings."
     ),
     "hinglish": (
         "Explain in natural, easy Hinglish (Roman Hindi + English technical terms), "
@@ -50,7 +49,7 @@ STYLE_INSTRUCTIONS: Dict[str, str] = {
 }
 
 MAP_SYSTEM_PROMPT = (
-    "You are reading one section of a larger document to help answer a user's question. "
+    "You are reading one section of an attached document to help answer a user's question. "
     "Extract all relevant facts, definitions, formulas, and details from this section "
     "with citations in [filename | Page X] format. If nothing in this section is relevant, "
     "reply briefly with: NO_RELEVANT_INFO."
@@ -61,7 +60,7 @@ def build_system_prompt(
     style: StyleName = "simple",
     custom_instruction: Optional[str] = None,
 ) -> str:
-    """Combine base grounding rules with the user's chosen explanation style."""
+    """Combine general assistant behavior with the user's chosen explanation style."""
     style_text = STYLE_INSTRUCTIONS.get(style, STYLE_INSTRUCTIONS["simple"])
     parts = [BASE_SYSTEM_PROMPT, f"Explanation style: {style_text}"]
     if custom_instruction and custom_instruction.strip():
@@ -79,7 +78,7 @@ class IngestResult:
 
 @dataclass(frozen=True)
 class ChatResponse:
-    """Full non-streaming answer with supporting citations."""
+    """Full non-streaming answer with optional supporting document citations."""
 
     answer: str
     provider: ProviderName
@@ -88,7 +87,7 @@ class ChatResponse:
 
 
 def build_context_block(sources: Sequence[SearchResult]) -> str:
-    """Format document chunks into a labeled full-document context block."""
+    """Format document chunks into a labeled context block."""
     parts: List[str] = []
     for src in sources:
         parts.append(f"[{src.filename} | Page {src.page_number}]\n{src.text}")
@@ -97,33 +96,36 @@ def build_context_block(sources: Sequence[SearchResult]) -> str:
 
 def build_messages(
     question: str,
-    context_text: str,
+    context_text: Optional[str] = None,
     system_prompt: str = BASE_SYSTEM_PROMPT,
     history: Optional[List[Dict[str, str]]] = None,
-    context_label: str = "Full document contents",
+    context_label: str = "Attached document contents",
 ) -> List[Dict[str, str]]:
-    """Build chat messages for Ollama combining system instructions, history, and context."""
+    """Build chat messages for Ollama with optional attached document context."""
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
     if history:
-        for msg in history[-6:]:
+        for msg in history[-8:]:
             role = msg.get("role")
             content = msg.get("content", "")
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
 
-    user_prompt = (
-        f"{context_label}:\n\n{context_text}\n\n"
-        f"Question: {question}\n\n"
-        "Answer in the requested explanation style and include [filename | Page X] citations naturally."
-    )
+    if context_text:
+        user_prompt = (
+            f"{context_label}:\n\n{context_text}\n\n"
+            f"Question: {question}"
+        )
+    else:
+        user_prompt = question
+
     messages.append({"role": "user", "content": user_prompt})
     return messages
 
 
 def build_gemini_input(
     question: str,
-    context_text: str,
+    context_text: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """Build a structured input string for Gemini Interactions API."""
@@ -131,17 +133,16 @@ def build_gemini_input(
     if history:
         recent = [
             f"{m['role'].capitalize()}: {m['content']}"
-            for m in history[-6:]
+            for m in history[-8:]
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
         if recent:
-            sections.append("Recent conversation:\n" + "\n".join(recent))
+            sections.append("Conversation so far:\n" + "\n".join(recent))
 
-    sections.append(f"Full document contents:\n\n{context_text}")
-    sections.append(
-        f"Question: {question}\n\n"
-        "Answer in the requested explanation style and include [filename | Page X] citations naturally."
-    )
+    if context_text:
+        sections.append(f"Attached document contents:\n\n{context_text}")
+
+    sections.append(question if not sections else f"User question: {question}")
     return "\n\n".join(sections)
 
 
@@ -182,7 +183,7 @@ def _serialize_source(s: SearchResult) -> Dict[str, Any]:
 
 
 class RAGService:
-    """Coordinates instant document ingestion and Full-PDF Offline/Online Q&A."""
+    """Coordinates general Offline/Online AI chat with optional document attachments."""
 
     def __init__(
         self,
@@ -216,7 +217,7 @@ class RAGService:
         embed_model: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> IngestResult:
-        """Parse, chunk, and store document pages immediately without requiring embedding APIs."""
+        """Parse, chunk, and store optional document pages immediately."""
         safe_name = Path(filename).name
         file_hash = hashlib.sha256(content).hexdigest()
         chosen_embed = embed_model or "full-pdf"
@@ -232,8 +233,6 @@ class RAGService:
             chunk_overlap=self.settings.chunk_overlap,
         )
 
-        # Full-PDF Mode reads chunks sequentially in reading order, so zero-vectors suffice
-        # and uploads succeed instantly offline or online without extra API quota.
         placeholder_embeddings = [[0.0] for _ in chunks]
 
         record = self.store.add_document(
@@ -286,11 +285,33 @@ class RAGService:
                 findings.append(f"Section {idx} notes:\n{cleaned}")
 
         if not findings:
-            return (
-                "Full document sections checked, but no relevant information was found "
-                "for your question."
-            )
+            return "Attached document sections had no direct match; answer using general knowledge."
         return "\n\n---\n\n".join(findings)
+
+    async def _prepare_context(
+        self,
+        question: str,
+        provider: ProviderName,
+        model: str,
+        sources: Sequence[SearchResult],
+    ) -> tuple[Optional[str], str]:
+        """Prepare optional context string + label for the selected provider."""
+        if not sources:
+            return None, ""
+
+        full_text = build_context_block(sources)
+        if provider == "gemini":
+            return full_text[:ONLINE_DIRECT_CHAR_LIMIT], "Attached document contents"
+
+        if len(full_text) <= self.offline_direct_char_limit:
+            return full_text, "Attached document contents"
+
+        synthesized = await self._map_reduce_offline(
+            question=question,
+            chunks=sources,
+            model=model,
+        )
+        return synthesized, "Notes extracted across attached document sections"
 
     async def ask(
         self,
@@ -303,22 +324,18 @@ class RAGService:
         history: Optional[List[Dict[str, str]]] = None,
         api_key: Optional[str] = None,
     ) -> ChatResponse:
-        """Read the full selected PDF(s) and generate a complete answer."""
+        """Answer any question directly, optionally using selected documents as context."""
         chosen_model = model or self._default_chat_model(provider)
         sources = self.load_full_documents(doc_ids=doc_ids)
-        if not sources:
-            return ChatResponse(
-                answer="No uploaded files found matching your selection. Please upload a PDF or note first.",
-                provider=provider,
-                model=chosen_model,
-                sources=[],
-            )
-
         sys_prompt = build_system_prompt(style=style, custom_instruction=custom_instruction)
-        full_text = build_context_block(sources)
+        context_text, context_label = await self._prepare_context(
+            question=question,
+            provider=provider,
+            model=chosen_model,
+            sources=sources,
+        )
 
         if provider == "gemini":
-            context_text = full_text[:ONLINE_DIRECT_CHAR_LIMIT]
             user_input = build_gemini_input(
                 question=question,
                 context_text=context_text,
@@ -331,26 +348,13 @@ class RAGService:
                 api_key=api_key,
             )
         else:
-            if len(full_text) <= self.offline_direct_char_limit:
-                messages = build_messages(
-                    question=question,
-                    context_text=full_text,
-                    system_prompt=sys_prompt,
-                    history=history,
-                )
-            else:
-                synthesized = await self._map_reduce_offline(
-                    question=question,
-                    chunks=sources,
-                    model=chosen_model,
-                )
-                messages = build_messages(
-                    question=question,
-                    context_text=synthesized,
-                    system_prompt=sys_prompt,
-                    history=history,
-                    context_label="Notes extracted across all PDF sections",
-                )
+            messages = build_messages(
+                question=question,
+                context_text=context_text,
+                system_prompt=sys_prompt,
+                history=history,
+                context_label=context_label or "Attached document contents",
+            )
             answer = await self.ollama.chat(messages=messages, model=chosen_model)
 
         return ChatResponse(
@@ -371,7 +375,7 @@ class RAGService:
         history: Optional[List[Dict[str, str]]] = None,
         api_key: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Read the full selected PDF(s), emit sources, and stream the answer."""
+        """Stream answer for any question, optionally grounded in attached documents."""
         chosen_model = model or self._default_chat_model(provider)
         sources = self.load_full_documents(doc_ids=doc_ids)
 
@@ -382,19 +386,15 @@ class RAGService:
             "sources": [_serialize_source(s) for s in sources],
         }
 
-        if not sources:
-            yield {
-                "type": "token",
-                "content": "No uploaded files found matching your selection. Please upload a PDF or note first.",
-            }
-            yield {"type": "done"}
-            return
-
         sys_prompt = build_system_prompt(style=style, custom_instruction=custom_instruction)
-        full_text = build_context_block(sources)
+        context_text, context_label = await self._prepare_context(
+            question=question,
+            provider=provider,
+            model=chosen_model,
+            sources=sources,
+        )
 
         if provider == "gemini":
-            context_text = full_text[:ONLINE_DIRECT_CHAR_LIMIT]
             user_input = build_gemini_input(
                 question=question,
                 context_text=context_text,
@@ -408,26 +408,13 @@ class RAGService:
             ):
                 yield {"type": "token", "content": token}
         else:
-            if len(full_text) <= self.offline_direct_char_limit:
-                messages = build_messages(
-                    question=question,
-                    context_text=full_text,
-                    system_prompt=sys_prompt,
-                    history=history,
-                )
-            else:
-                synthesized = await self._map_reduce_offline(
-                    question=question,
-                    chunks=sources,
-                    model=chosen_model,
-                )
-                messages = build_messages(
-                    question=question,
-                    context_text=synthesized,
-                    system_prompt=sys_prompt,
-                    history=history,
-                    context_label="Notes extracted across all PDF sections",
-                )
+            messages = build_messages(
+                question=question,
+                context_text=context_text,
+                system_prompt=sys_prompt,
+                history=history,
+                context_label=context_label or "Attached document contents",
+            )
             async for token in self.ollama.chat_stream(messages=messages, model=chosen_model):
                 yield {"type": "token", "content": token}
 

@@ -1,13 +1,13 @@
-# DocMind RAG — Offline (Ollama) & Online (Gemini) PDF Chat
+# AI Chat — Online (Gemini) & Offline (Ollama) Assistant
 
-A full-stack RAG web application to upload PDFs, Markdown, and text notes and ask questions with page citations—supporting **both** **Offline mode (Ollama)** and **Online mode (Google Gemini API)**.
+A clean, simple AI chat web app where you can **ask anything** (coding, study doubts, general questions) using **Online (Google Gemini API)** or **Offline (Ollama)**—with optional PDF/Markdown file attachments.
 
 ## Features
 
-- **Full PDF Mode (No Top-K Limit):** Reads all pages of selected PDFs end-to-end—sending full documents directly to Online Gemini (1M context) and automatically using section-by-section Map-Reduce for large PDFs in Offline Ollama mode.
-- **Dual Mode Switcher:** Toggle between **Offline (Ollama)** (`qwen2.5:7b` / `gemma4:12b` + `nomic-embed-text`) and **Online (Gemini)** (`gemini-4-hydrogen` / `gemini-4-neon` / `gemini-4-carbon` + `gemini-embedding-001`).
-- **Modern Single-Server Web UI:** Served directly by FastAPI at `http://localhost:8000` with drag-and-drop uploads, document filter checkboxes, live SSE streaming, and expandable source citations (`filename • Page X`).
-- **Persistent Vector Store:** SQLite + NumPy (`data/rag_store.db`) with SHA-256 deduplication and per-provider embedding tracking.
+- **Ask Anything (General Chat):** Works right away without needing to upload any files—supports conversation history, streaming replies, and clean Markdown formatting.
+- **Explanation Styles & Custom Instructions:** Switch between **Simple**, **Detailed**, **Hinglish**, and **Exam Notes**, or add your own custom instructions in Settings.
+- **Optional File Context:** Attach `.pdf`, `.md`, or `.txt` files anytime to discuss or summarize their full contents with page citations.
+- **Dual Mode Switcher:** Toggle between **Online (Gemini)** (`gemini-4-hydrogen`, `gemini-3.5-flash-lite`, etc.) and **Offline (Ollama)** (`qwen2.5:7b`, `gemma4:12b`, etc.).
 
 ## Project Structure
 
@@ -26,7 +26,7 @@ A full-stack RAG web application to upload PDFs, Markdown, and text notes and as
 ### Option A: Online Mode (Fastest — No Ollama Install Needed)
 1. Start the server:
    ```bash
-   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+   cd /home/aditya/.gemini/antigravity/scratch/local-rag-chat
    .venv/bin/uvicorn backend.app:app --reload --port 8000
    ```
 2. Open `http://localhost:8000` in your browser.

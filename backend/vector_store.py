@@ -225,6 +225,9 @@ class VectorStore:
         doc_ids: Optional[Sequence[str]] = None,
     ) -> List[SearchResult]:
         """Return all chunks for the selected documents in exact page/chunk reading order."""
+        if doc_ids is not None and len(doc_ids) == 0:
+            return []
+
         sql = """
             SELECT c.doc_id, d.filename, d.embed_provider, c.page_number,
                    c.chunk_index, c.text

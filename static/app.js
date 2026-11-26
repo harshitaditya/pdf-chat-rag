@@ -412,13 +412,12 @@ async function sendQuestion(questionText, reuseRows = null) {
     els.questionInput.value = "";
     els.questionInput.style.height = "auto";
     userRow = appendMessage("user", question).row;
-    botRefs = appendMessage("assistant", "Reading your files...");
+    const thinkingLabel =
+      state.selectedDocIds.size > 0 ? "Reading your files..." : "Thinking...";
+    botRefs = appendMessage("assistant", thinkingLabel);
   }
 
-  const docIds =
-    state.selectedDocIds.size > 0 && state.selectedDocIds.size < state.documents.length
-      ? [...state.selectedDocIds]
-      : null;
+  const docIds = [...state.selectedDocIds];
 
   let fullAnswer = "";
   let retrievedSources = [];

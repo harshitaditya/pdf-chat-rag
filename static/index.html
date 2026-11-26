@@ -3,23 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF Chat</title>
+  <title>AI Chat</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <div class="layout">
-    <!-- Simple Sidebar: Only your files -->
+    <!-- Simple Sidebar: Optional files -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-top">
         <div class="brand">
-          <span class="brand-mark">P</span>
-          <span class="brand-name">PDF Chat</span>
+          <span class="brand-mark">A</span>
+          <span class="brand-name">AI Chat</span>
         </div>
         <button type="button" class="icon-close mobile-only" id="closeSidebarBtn" aria-label="Close menu">&times;</button>
       </div>
 
       <button type="button" class="upload-btn" id="uploadTriggerBtn">
-        + Upload PDF or Notes
+        + Attach PDF or Notes (Optional)
       </button>
       <input
         type="file"
@@ -32,11 +32,11 @@
 
       <div class="files-section">
         <div class="files-header">
-          <span>Your files</span>
+          <span>Attached files</span>
           <button type="button" class="text-btn" id="toggleAllDocsBtn" hidden>All</button>
         </div>
         <ul class="file-list" id="docList"></ul>
-        <p class="no-files" id="noFilesMsg">No files yet. Upload a PDF, Markdown, or text file to start.</p>
+        <p class="no-files" id="noFilesMsg">No files attached. You can ask anything directly, or attach a PDF anytime.</p>
       </div>
     </aside>
 
@@ -67,23 +67,23 @@
 
       <div class="chat-scroll" id="messages">
         <div class="welcome" id="emptyState">
-          <h1>What would you like to know?</h1>
-          <p>Upload any PDF or notes, pick an explanation style, and ask anything.</p>
+          <h1>Ask anything</h1>
+          <p>Chat freely using Gemini (Online) or Ollama (Offline)—or attach a PDF anytime.</p>
           <div class="suggestions">
-            <button type="button" class="suggestion-btn">Explain this PDF simply with examples</button>
-            <button type="button" class="suggestion-btn">List the key takeaways</button>
-            <button type="button" class="suggestion-btn">Summarize step by step</button>
+            <button type="button" class="suggestion-btn">Explain how REST APIs work simply</button>
+            <button type="button" class="suggestion-btn">Write a clean Python function to sort a list</button>
+            <button type="button" class="suggestion-btn">Give me a 5-minute study plan for SQL</button>
           </div>
         </div>
       </div>
 
       <div class="composer-wrap">
         <form class="composer" id="chatForm">
-          <button type="button" class="attach-btn" id="attachBtn" title="Upload PDF or Notes">+</button>
+          <button type="button" class="attach-btn" id="attachBtn" title="Attach PDF or Notes (optional)">+</button>
           <textarea
             id="questionInput"
             rows="1"
-            placeholder="Ask a question about your files..."
+            placeholder="Ask anything..."
             required
           ></textarea>
           <button type="submit" class="send-btn" id="sendBtn" aria-label="Send">&#8593;</button>
